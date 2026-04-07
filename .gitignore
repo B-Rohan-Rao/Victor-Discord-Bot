@@ -59,6 +59,10 @@ cache/
 *.sqlite
 *.sqlite3
 
+# Keep runtime cache ignored, but include Python package src/cache
+!src/cache/
+!src/cache/*.py
+
 # Build
 dist/
 build/
