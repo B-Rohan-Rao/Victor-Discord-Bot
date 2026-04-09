@@ -5,7 +5,6 @@ Uses Pydantic for validation and environment variable loading
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
-from typing import Literal
 
 
 class Settings(BaseSettings):
@@ -90,6 +89,17 @@ class Settings(BaseSettings):
         validation_alias="HALLUCINATION_THRESHOLD",
         description="Confidence threshold for flagging hallucinations (0-1)"
     )
+
+    # Subscription/Scheduler configuration
+    max_subscriptions_per_user: int = Field(default=20, validation_alias="MAX_SUBSCRIPTIONS_PER_USER")
+    subscription_expiry_days: int = Field(default=60, validation_alias="SUBSCRIPTION_EXPIRY_DAYS")
+    scheduler_batch_size: int = Field(default=20, validation_alias="SCHEDULER_BATCH_SIZE")
+    scheduler_batch_delay_seconds: float = Field(
+        default=3.0,
+        validation_alias="SCHEDULER_BATCH_DELAY_SECONDS",
+    )
+    admin_user_id: str = Field(default="", validation_alias="ADMIN_USER_ID")
+    update_check_days: int = Field(default=7, validation_alias="UPDATE_CHECK_DAYS")
 
     @property
     def preferred_sources_list(self) -> list[str]:

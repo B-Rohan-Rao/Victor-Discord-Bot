@@ -7,6 +7,7 @@ from src.agents.summarizer import SummarizerNode
 from src.agents.citation_builder import CitationBuilderNode
 from src.agents.hallucination_detector import HallucinationDetectorNode
 from src.agents.report_generator import ReportGeneratorNode
+from src.agents.topic_categorizer import TopicCategorizerNode
 
 __all__ = [
     "QueryPlannerNode",
@@ -16,4 +17,5 @@ __all__ = [
     "CitationBuilderNode",
     "HallucinationDetectorNode",
     "ReportGeneratorNode",
+    "TopicCategorizerNode",
 ]

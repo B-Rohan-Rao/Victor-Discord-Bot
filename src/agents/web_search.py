@@ -72,6 +72,59 @@ class WebSearchNode:
             logger.error(f"Search error: {e}")
             return []
 
+    async def search_incremental(self, query: str, max_results: int = 10, days_back: int = 7) -> List[Citation]:
+        """Search for recent updates only, intended for subscription checks."""
+        logger.info(f"Incremental search for: {query} (days_back={days_back})")
+
+        if not self.api_key:
+            logger.error("SERPER_API_KEY is missing. Set it in .env to enable web search.")
+            return []
+
+        try:
+            headers = {
+                "X-API-KEY": self.api_key,
+                "Content-Type": "application/json",
+            }
+
+            tbs = "qdr:w"
+            if days_back <= 1:
+                tbs = "qdr:d"
+            elif days_back <= 30:
+                tbs = "qdr:m"
+
+            payload = {
+                "q": query,
+                "num": max_results,
+                "tbs": tbs,
+            }
+
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(self.api_url, headers=headers, json=payload)
+                response.raise_for_status()
+                data = response.json()
+
+            results = data.get("organic", [])
+            citations: List[Citation] = []
+            for result in results:
+                url = result.get("link", "")
+                if not url:
+                    continue
+                citations.append(
+                    Citation(
+                        title=result.get("title", "Unknown"),
+                        url=url,
+                        source_type="web",
+                        credibility_score=0.70,
+                        snippet=result.get("snippet", "")[:200],
+                    )
+                )
+
+            logger.info(f"Incremental search found {len(citations)} sources")
+            return citations
+        except Exception as e:
+            logger.error(f"Incremental search error: {e}")
+            return []
+
     async def process(self, query: ResearchQuery) -> List[Citation]:
         """
         Search for all sub-queries

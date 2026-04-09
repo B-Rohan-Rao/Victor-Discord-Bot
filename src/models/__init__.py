@@ -2,5 +2,6 @@
 
 from src.models.research import ResearchQuery, ResearchResult, Citation, ClaimWithCitation
 from src.models.cache import CacheEntry
+from src.models.subscription import Subscription
 
-__all__ = ["ResearchQuery", "ResearchResult", "Citation", "ClaimWithCitation", "CacheEntry"]
+__all__ = ["ResearchQuery", "ResearchResult", "Citation", "ClaimWithCitation", "CacheEntry", "Subscription"]
