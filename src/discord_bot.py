@@ -11,6 +11,7 @@ import os
 import socket
 import tempfile
 import asyncio
+import re
 from datetime import datetime, timedelta, timezone
 
 import discord
@@ -91,10 +92,41 @@ async def safe_defer_interaction(interaction: discord.Interaction) -> bool:
 class SubscribeView(discord.ui.View):
     """Interactive controls for topic subscription actions."""
 
-    def __init__(self, topic: str, bot_client: "ResearchBot"):
-        super().__init__(timeout=300)
+    def __init__(
+        self,
+        topic: str | None,
+        bot_client: "ResearchBot",
+        timeout: float | None = 1800,
+        is_subscribed: bool = False,
+    ):
+        # Keep button interactions active longer to reduce perceived failures in production.
+        super().__init__(timeout=timeout)
         self.topic = topic
         self.bot_client = bot_client
+        self._apply_subscription_state(is_subscribed)
+
+    def _apply_subscription_state(self, is_subscribed: bool) -> None:
+        """Reflect subscription state in button availability."""
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                if item.custom_id == "subscription:subscribe":
+                    item.label = "✅ Subscribed" if is_subscribed else "🔔 Subscribe to Updates"
+                    item.disabled = is_subscribed
+                elif item.custom_id == "subscription:unsubscribe":
+                    item.disabled = not is_subscribed
+
+    def _resolve_topic(self, interaction: discord.Interaction) -> str | None:
+        if self.topic:
+            return self.topic
+
+        message = interaction.message
+        if message and message.embeds:
+            description = message.embeds[0].description or ""
+            match = re.search(r"\*\*Query:\*\*\s*(.+)", description)
+            if match:
+                return match.group(1).strip()
+
+        return None
 
     async def _safe_user_message(self, interaction: discord.Interaction, content: str) -> None:
         """Send ephemeral feedback even if response has already been acknowledged."""
@@ -114,13 +146,13 @@ class SubscribeView(discord.ui.View):
         except Exception as exc:
             logger.warning(f"Failed to update subscription view state: {exc}")
 
-    async def _post_subscribe_tasks(self, user_id: str) -> None:
+    async def _post_subscribe_tasks(self, user_id: str, topic: str) -> None:
         """Run slower post-subscribe tasks without blocking button UX."""
         try:
-            category = await self.bot_client.topic_categorizer.categorize(self.topic)
+            category = await self.bot_client.topic_categorizer.categorize(topic)
             await self.bot_client.subscription_store.update(
                 user_id,
-                self.topic,
+                topic,
                 {"category": category},
             )
         except Exception as exc:
@@ -128,10 +160,10 @@ class SubscribeView(discord.ui.View):
 
         try:
             confirmation = self.bot_client.discord_notifier.create_subscription_result_embed(
-                self.topic,
+                topic,
                 action="subscribe",
                 message=(
-                    f"✅ You're now subscribed to updates for '{self.topic}'. "
+                    f"✅ You're now subscribed to updates for '{topic}'. "
                     "You'll get a DM when new information is found. Expires in 2 months."
                 ),
             )
@@ -139,19 +171,26 @@ class SubscribeView(discord.ui.View):
         except Exception as exc:
             logger.warning(f"Post-subscribe DM failed for user {user_id}: {exc}")
 
-    @discord.ui.button(label="🔔 Subscribe to Updates", style=discord.ButtonStyle.primary)
+    @discord.ui.button(
+        label="🔔 Subscribe to Updates",
+        style=discord.ButtonStyle.primary,
+        custom_id="subscription:subscribe",
+    )
     async def subscribe(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        topic = self._resolve_topic(interaction)
+        if not topic:
+            await self._safe_user_message(interaction, "I could not determine the topic for this message.")
+            return
+
         user_id = str(interaction.user.id)
 
         try:
-            # Acknowledge immediately so Discord does not expire this interaction during I/O work.
             if not interaction.response.is_done():
-                await interaction.response.defer(thinking=False)
+                await interaction.response.send_message("⏳ Subscribing you now...", ephemeral=True)
 
-            existing = await self.bot_client.subscription_store.get_subscription(user_id, self.topic)
+            existing = await self.bot_client.subscription_store.get_subscription(user_id, topic)
             if existing is not None:
-                button.label = "✅ Subscribed"
-                button.disabled = True
+                self._apply_subscription_state(True)
                 await self._safe_update_view(interaction)
                 await self._safe_user_message(interaction, "You are already subscribed to this topic.")
                 return
@@ -169,7 +208,7 @@ class SubscribeView(discord.ui.View):
             now = datetime.now(timezone.utc)
             subscription = Subscription(
                 user_id=user_id,
-                topic=self.topic,
+                topic=topic,
                 category="semi-static",
                 execution_day=execution_day,
                 created_at=now,
@@ -180,8 +219,7 @@ class SubscribeView(discord.ui.View):
             create_status = await self.bot_client.subscription_store.create(subscription)
 
             if create_status == "already_active":
-                button.label = "✅ Subscribed"
-                button.disabled = True
+                self._apply_subscription_state(True)
                 await self._safe_update_view(interaction)
                 await self._safe_user_message(interaction, "You are already subscribed to this topic.")
                 return
@@ -190,11 +228,10 @@ class SubscribeView(discord.ui.View):
                 await self._safe_user_message(interaction, "I could not create a new subscription for this topic.")
                 return
 
-            button.label = "✅ Subscribed"
-            button.disabled = True
+            self._apply_subscription_state(True)
             await self._safe_update_view(interaction)
 
-            asyncio.create_task(self._post_subscribe_tasks(user_id))
+            asyncio.create_task(self._post_subscribe_tasks(user_id, topic))
             if create_status == "reactivated":
                 await self._safe_user_message(interaction, "Subscription re-activated. Check your DMs for confirmation.")
             else:
@@ -203,23 +240,36 @@ class SubscribeView(discord.ui.View):
             logger.error(f"Subscribe action failed for user {user_id}: {exc}")
             await self._safe_user_message(interaction, "Subscription failed. Please try again shortly.")
 
-    @discord.ui.button(label="❌ Unsubscribe", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(
+        label="❌ Unsubscribe",
+        style=discord.ButtonStyle.secondary,
+        custom_id="subscription:unsubscribe",
+    )
     async def unsubscribe(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        topic = self._resolve_topic(interaction)
+        if not topic:
+            await self._safe_user_message(interaction, "I could not determine the topic for this message.")
+            return
+
         user_id = str(interaction.user.id)
         try:
             if not interaction.response.is_done():
-                await interaction.response.defer(thinking=False)
+                await interaction.response.send_message("⏳ Unsubscribing you now...", ephemeral=True)
 
-            removed = await self.bot_client.subscription_store.delete(user_id, self.topic)
+            removed = await self.bot_client.subscription_store.delete(user_id, topic)
             if removed:
+                self._apply_subscription_state(False)
+                await self._safe_update_view(interaction)
                 confirmation = self.bot_client.discord_notifier.create_subscription_result_embed(
-                    self.topic,
+                    topic,
                     action="unsubscribe",
-                    message=f"✅ Unsubscribed from '{self.topic}'. You can re-subscribe anytime.",
+                    message=f"✅ Unsubscribed from '{topic}'. You can re-subscribe anytime.",
                 )
                 await self.bot_client.discord_notifier.send_dm(user_id, confirmation, self.bot_client)
-                await self._safe_user_message(interaction, f"✅ Unsubscribed from '{self.topic}'.")
+                await self._safe_user_message(interaction, f"✅ Unsubscribed from '{topic}'.")
             else:
+                self._apply_subscription_state(False)
+                await self._safe_update_view(interaction)
                 await self._safe_user_message(interaction, "No active subscription found for this topic.")
         except Exception as exc:
             logger.error(f"Unsubscribe action failed for user {user_id}: {exc}")
@@ -259,6 +309,9 @@ class ResearchBot(discord.Client):
         )
         self.subscription_worker.start()
 
+        # Register a persistent fallback view so buttons continue working after bot restarts.
+        self.add_view(SubscribeView(topic=None, bot_client=self, timeout=None))
+
     async def close(self) -> None:
         if self.subscription_worker is not None:
             await self.subscription_worker.stop()
@@ -296,7 +349,13 @@ async def agent(interaction: discord.Interaction, question: str) -> None:
             flags = "\n".join(result.hallucination_flags[:3])
             embed.add_field(name="Flags", value=flags[:1000], inline=False)
 
-        view = SubscribeView(topic=question, bot_client=bot)
+        existing = await bot.subscription_store.get_subscription(str(interaction.user.id), question)
+        view = SubscribeView(
+            topic=question,
+            bot_client=bot,
+            timeout=1800,
+            is_subscribed=existing is not None,
+        )
         await interaction.followup.send(embed=embed, view=view)
     except Exception as exc:
         logger.error(f"Slash command /agent failed: {exc}")
