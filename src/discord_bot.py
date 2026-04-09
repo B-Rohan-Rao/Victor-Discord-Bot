@@ -8,7 +8,9 @@ Usage:
 
 import hashlib
 import os
+import socket
 import tempfile
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import discord
@@ -112,6 +114,31 @@ class SubscribeView(discord.ui.View):
         except Exception as exc:
             logger.warning(f"Failed to update subscription view state: {exc}")
 
+    async def _post_subscribe_tasks(self, user_id: str) -> None:
+        """Run slower post-subscribe tasks without blocking button UX."""
+        try:
+            category = await self.bot_client.topic_categorizer.categorize(self.topic)
+            await self.bot_client.subscription_store.update(
+                user_id,
+                self.topic,
+                {"category": category},
+            )
+        except Exception as exc:
+            logger.warning(f"Post-subscribe categorization failed for user {user_id}: {exc}")
+
+        try:
+            confirmation = self.bot_client.discord_notifier.create_subscription_result_embed(
+                self.topic,
+                action="subscribe",
+                message=(
+                    f"✅ You're now subscribed to updates for '{self.topic}'. "
+                    "You'll get a DM when new information is found. Expires in 2 months."
+                ),
+            )
+            await self.bot_client.discord_notifier.send_dm(user_id, confirmation, self.bot_client)
+        except Exception as exc:
+            logger.warning(f"Post-subscribe DM failed for user {user_id}: {exc}")
+
     @discord.ui.button(label="🔔 Subscribe to Updates", style=discord.ButtonStyle.primary)
     async def subscribe(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         user_id = str(interaction.user.id)
@@ -137,23 +164,29 @@ class SubscribeView(discord.ui.View):
                     "Please unsubscribe from some topics first.",
                 )
                 return
-
-            category = await self.bot_client.topic_categorizer.categorize(self.topic)
             execution_day = int(hashlib.sha256(user_id.encode()).hexdigest(), 16) % 7
 
             now = datetime.now(timezone.utc)
             subscription = Subscription(
                 user_id=user_id,
                 topic=self.topic,
-                category=category,
+                category="semi-static",
                 execution_day=execution_day,
                 created_at=now,
                 expires_at=now + timedelta(days=settings.subscription_expiry_days),
                 status="active",
             )
 
-            created = await self.bot_client.subscription_store.create(subscription)
-            if not created:
+            create_status = await self.bot_client.subscription_store.create(subscription)
+
+            if create_status == "already_active":
+                button.label = "✅ Subscribed"
+                button.disabled = True
+                await self._safe_update_view(interaction)
+                await self._safe_user_message(interaction, "You are already subscribed to this topic.")
+                return
+
+            if create_status == "failed":
                 await self._safe_user_message(interaction, "I could not create a new subscription for this topic.")
                 return
 
@@ -161,16 +194,11 @@ class SubscribeView(discord.ui.View):
             button.disabled = True
             await self._safe_update_view(interaction)
 
-            confirmation = self.bot_client.discord_notifier.create_subscription_result_embed(
-                self.topic,
-                action="subscribe",
-                message=(
-                    f"✅ You're now subscribed to updates for '{self.topic}'. "
-                    "You'll get a DM when new information is found. Expires in 2 months."
-                ),
-            )
-            await self.bot_client.discord_notifier.send_dm(user_id, confirmation, self.bot_client)
-            await self._safe_user_message(interaction, "Subscription saved. Check your DMs for confirmation.")
+            asyncio.create_task(self._post_subscribe_tasks(user_id))
+            if create_status == "reactivated":
+                await self._safe_user_message(interaction, "Subscription re-activated. Check your DMs for confirmation.")
+            else:
+                await self._safe_user_message(interaction, "Subscription saved. Check your DMs for confirmation.")
         except Exception as exc:
             logger.error(f"Subscribe action failed for user {user_id}: {exc}")
             await self._safe_user_message(interaction, "Subscription failed. Please try again shortly.")
@@ -283,6 +311,8 @@ async def _send_health(interaction: discord.Interaction) -> None:
 
     mongo_ok = "configured" if bool(settings.mongo_uri) else "missing"
     redis_ok = "configured" if bool(settings.redis_host) else "missing"
+    runtime_name = settings.bot_instance_name or ("RAILWAY" if os.getenv("RAILWAY_PROJECT_ID") else "LOCAL")
+    runtime_identity = f"{runtime_name} @ {socket.gethostname()}"
 
     embed = discord.Embed(
         title="Bot Health",
@@ -294,6 +324,7 @@ async def _send_health(interaction: discord.Interaction) -> None:
     embed.add_field(name="Guild Sync", value=settings.discord_guild_id or "global", inline=True)
     embed.add_field(name="Mongo", value=mongo_ok, inline=True)
     embed.add_field(name="Redis", value=redis_ok, inline=True)
+    embed.add_field(name="Runtime", value=runtime_identity, inline=False)
     embed.add_field(
         name="Limits",
         value=(
@@ -301,6 +332,11 @@ async def _send_health(interaction: discord.Interaction) -> None:
             f"expiry_days={settings.subscription_expiry_days}\n"
             f"batch={settings.scheduler_batch_size}/{settings.scheduler_batch_delay_seconds}s"
         ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Token Safety",
+        value="Run only one runtime for this bot token (local or Railway, not both).",
         inline=False,
     )
 

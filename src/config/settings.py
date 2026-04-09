@@ -100,6 +100,7 @@ class Settings(BaseSettings):
     )
     admin_user_id: str = Field(default="", validation_alias="ADMIN_USER_ID")
     update_check_days: int = Field(default=7, validation_alias="UPDATE_CHECK_DAYS")
+    bot_instance_name: str = Field(default="", validation_alias="BOT_INSTANCE_NAME")
 
     @property
     def preferred_sources_list(self) -> list[str]:

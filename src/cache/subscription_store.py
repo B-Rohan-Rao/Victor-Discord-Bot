@@ -1,10 +1,11 @@
 """MongoDB CRUD store for topic subscriptions."""
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 import asyncio
 
 from pymongo import ASCENDING, MongoClient
+from pymongo.errors import DuplicateKeyError
 
 from src.config.settings import settings
 from src.models.subscription import Subscription
@@ -37,27 +38,39 @@ class SubscriptionStore:
     async def _run(self, fn):
         return await asyncio.to_thread(fn)
 
-    async def create(self, subscription: Subscription) -> bool:
-        def _sync_create() -> bool:
+    async def create(self, subscription: Subscription) -> Literal["created", "already_active", "reactivated", "failed"]:
+        def _sync_create() -> Literal["created", "already_active", "reactivated", "failed"]:
             collection = self._get_collection_sync()
             existing = collection.find_one(
                 {
                     "user_id": subscription.user_id,
                     "topic": subscription.topic,
-                    "status": "active",
-                }
+                },
+                {"_id": 1, "status": 1},
             )
             if existing:
-                return False
+                if existing.get("status") == "active":
+                    return "already_active"
+
+                # Allow explicit re-subscribe for previously expired/inactive records.
+                result = collection.update_one(
+                    {"_id": existing["_id"]},
+                    {"$set": subscription.model_dump(mode="python")},
+                )
+                return "reactivated" if result.matched_count > 0 else "failed"
 
             collection.insert_one(subscription.model_dump(mode="python"))
-            return True
+            return "created"
 
         try:
             return await self._run(_sync_create)
+        except DuplicateKeyError:
+            # Race condition: another instance created the same user/topic just before this request.
+            return "already_active"
+
         except Exception as exc:
             logger.error(f"Failed to create subscription: {exc}")
-            return False
+            return "failed"
 
     async def get_by_user(self, user_id: str) -> list[Subscription]:
         def _sync_get() -> list[Subscription]:
