@@ -94,25 +94,47 @@ class SubscribeView(discord.ui.View):
         self.topic = topic
         self.bot_client = bot_client
 
+    async def _safe_user_message(self, interaction: discord.Interaction, content: str) -> None:
+        """Send ephemeral feedback even if response has already been acknowledged."""
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(content, ephemeral=True)
+            else:
+                await interaction.response.send_message(content, ephemeral=True)
+        except Exception as exc:
+            logger.warning(f"Failed to send subscription feedback message: {exc}")
+
+    async def _safe_update_view(self, interaction: discord.Interaction) -> None:
+        """Update the original message view without relying on the interaction token."""
+        try:
+            if interaction.message is not None:
+                await interaction.message.edit(view=self)
+        except Exception as exc:
+            logger.warning(f"Failed to update subscription view state: {exc}")
+
     @discord.ui.button(label="🔔 Subscribe to Updates", style=discord.ButtonStyle.primary)
     async def subscribe(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         user_id = str(interaction.user.id)
 
         try:
+            # Acknowledge immediately so Discord does not expire this interaction during I/O work.
+            if not interaction.response.is_done():
+                await interaction.response.defer(thinking=False)
+
             existing = await self.bot_client.subscription_store.get_subscription(user_id, self.topic)
             if existing is not None:
                 button.label = "✅ Subscribed"
                 button.disabled = True
-                await interaction.response.edit_message(view=self)
-                await interaction.followup.send("You are already subscribed to this topic.", ephemeral=True)
+                await self._safe_update_view(interaction)
+                await self._safe_user_message(interaction, "You are already subscribed to this topic.")
                 return
 
             current_count = await self.bot_client.subscription_store.get_count_by_user(user_id)
             if current_count >= settings.max_subscriptions_per_user:
-                await interaction.response.send_message(
+                await self._safe_user_message(
+                    interaction,
                     f"⚠️ You've reached the maximum of {settings.max_subscriptions_per_user} subscriptions. "
                     "Please unsubscribe from some topics first.",
-                    ephemeral=True,
                 )
                 return
 
@@ -132,15 +154,12 @@ class SubscribeView(discord.ui.View):
 
             created = await self.bot_client.subscription_store.create(subscription)
             if not created:
-                await interaction.response.send_message(
-                    "I could not create a new subscription for this topic.",
-                    ephemeral=True,
-                )
+                await self._safe_user_message(interaction, "I could not create a new subscription for this topic.")
                 return
 
             button.label = "✅ Subscribed"
             button.disabled = True
-            await interaction.response.edit_message(view=self)
+            await self._safe_update_view(interaction)
 
             confirmation = self.bot_client.discord_notifier.create_subscription_result_embed(
                 self.topic,
@@ -151,15 +170,18 @@ class SubscribeView(discord.ui.View):
                 ),
             )
             await self.bot_client.discord_notifier.send_dm(user_id, confirmation, self.bot_client)
-            await interaction.followup.send("Subscription saved. Check your DMs for confirmation.", ephemeral=True)
+            await self._safe_user_message(interaction, "Subscription saved. Check your DMs for confirmation.")
         except Exception as exc:
             logger.error(f"Subscribe action failed for user {user_id}: {exc}")
-            await interaction.response.send_message("Subscription failed. Please try again shortly.", ephemeral=True)
+            await self._safe_user_message(interaction, "Subscription failed. Please try again shortly.")
 
     @discord.ui.button(label="❌ Unsubscribe", style=discord.ButtonStyle.secondary)
     async def unsubscribe(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         user_id = str(interaction.user.id)
         try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(thinking=False)
+
             removed = await self.bot_client.subscription_store.delete(user_id, self.topic)
             if removed:
                 confirmation = self.bot_client.discord_notifier.create_subscription_result_embed(
@@ -168,18 +190,12 @@ class SubscribeView(discord.ui.View):
                     message=f"✅ Unsubscribed from '{self.topic}'. You can re-subscribe anytime.",
                 )
                 await self.bot_client.discord_notifier.send_dm(user_id, confirmation, self.bot_client)
-                await interaction.response.send_message(
-                    f"✅ Unsubscribed from '{self.topic}'.",
-                    ephemeral=True,
-                )
+                await self._safe_user_message(interaction, f"✅ Unsubscribed from '{self.topic}'.")
             else:
-                await interaction.response.send_message(
-                    "No active subscription found for this topic.",
-                    ephemeral=True,
-                )
+                await self._safe_user_message(interaction, "No active subscription found for this topic.")
         except Exception as exc:
             logger.error(f"Unsubscribe action failed for user {user_id}: {exc}")
-            await interaction.response.send_message("Unsubscribe failed. Please try again shortly.", ephemeral=True)
+            await self._safe_user_message(interaction, "Unsubscribe failed. Please try again shortly.")
 
 
 class ResearchBot(discord.Client):
