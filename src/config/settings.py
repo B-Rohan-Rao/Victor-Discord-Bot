@@ -3,6 +3,8 @@ Configuration settings for the Autonomous Research Agent
 Uses Pydantic for validation and environment variable loading
 """
 
+import os
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 
@@ -119,6 +121,24 @@ class Settings(BaseSettings):
         if model.startswith("groq/"):
             return model.split("/", 1)[1]
         return model
+
+    @staticmethod
+    def _normalize_secret(value: str) -> str:
+        """Trim whitespace and surrounding quotes from secret values."""
+        normalized = (value or "").strip()
+        if len(normalized) >= 2 and normalized[0] == normalized[-1] and normalized[0] in ('"', "'"):
+            normalized = normalized[1:-1].strip()
+        return normalized
+
+    @property
+    def groq_api_key_value(self) -> str:
+        """Return normalized GROQ API key, with env fallback for hosted runtimes."""
+        return self._normalize_secret(self.groq_api_key or os.getenv("GROQ_API_KEY", ""))
+
+    @property
+    def discord_bot_token_value(self) -> str:
+        """Return normalized Discord bot token, with env fallback for hosted runtimes."""
+        return self._normalize_secret(self.discord_bot_token or os.getenv("DISCORD_BOT_TOKEN", ""))
 
 
 # Load settings from environment

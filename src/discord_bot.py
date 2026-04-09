@@ -408,7 +408,7 @@ async def health(interaction: discord.Interaction) -> None:
 
 
 def main() -> None:
-    if not settings.discord_bot_token:
+    if not settings.discord_bot_token_value:
         raise RuntimeError("DISCORD_BOT_TOKEN is missing in .env")
 
     lock = SingleInstanceLock()
@@ -417,7 +417,7 @@ def main() -> None:
         raise SystemExit(1)
 
     try:
-        bot.run(settings.discord_bot_token)
+        bot.run(settings.discord_bot_token_value)
     finally:
         lock.release()
 

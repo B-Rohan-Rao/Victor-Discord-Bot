@@ -51,8 +51,15 @@ class ResearchOrchestrator:
 
     def __init__(self):
         # Initialize LLM
+        groq_key = settings.groq_api_key_value
+        if not groq_key:
+            raise RuntimeError(
+                "GROQ_API_KEY is missing or empty at runtime. "
+                "In Railway, set it under the SAME deployed service Variables and redeploy."
+            )
+
         self.llm = ChatGroq(
-            api_key=SecretStr(settings.groq_api_key),
+            api_key=SecretStr(groq_key),
             model=settings.groq_model_name,
             temperature=0.3,  # Lower temp for more factual responses
             max_tokens=2048
