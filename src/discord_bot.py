@@ -380,10 +380,17 @@ async def _send_health(interaction: discord.Interaction) -> None:
     mongo_status = "missing"
     mongo_error = ""
     if settings.mongo_uri:
-        ok, reason = await bot.subscription_store.ping()
-        mongo_status = "connected" if ok else "unreachable"
-        if not ok:
-            mongo_error = reason[:200]
+        try:
+            ok, reason = await asyncio.wait_for(bot.subscription_store.ping(), timeout=2.5)
+            mongo_status = "connected" if ok else "unreachable"
+            if not ok:
+                mongo_error = reason[:200]
+        except TimeoutError:
+            mongo_status = "unreachable"
+            mongo_error = "Mongo health check timed out"
+        except Exception as exc:
+            mongo_status = "unreachable"
+            mongo_error = str(exc)[:200]
 
     redis_ok = "configured" if bool(settings.redis_host) else "missing"
     runtime_name = settings.bot_instance_name or ("RAILWAY" if os.getenv("RAILWAY_PROJECT_ID") else "LOCAL")
@@ -417,11 +424,22 @@ async def _send_health(interaction: discord.Interaction) -> None:
     if mongo_error:
         embed.add_field(name="Mongo Error", value=mongo_error, inline=False)
 
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    if interaction.response.is_done():
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    else:
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="health", description="Show bot and scheduler health status")
 async def health(interaction: discord.Interaction) -> None:
+    try:
+        await interaction.response.defer(thinking=False, ephemeral=True)
+    except Exception as exc:
+        if getattr(exc, "code", None) == 40060:
+            logger.warning("/health interaction already acknowledged by another handler/process")
+            return
+        raise
+
     await _send_health(interaction)
 
 
