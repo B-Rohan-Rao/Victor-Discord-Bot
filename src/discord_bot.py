@@ -225,7 +225,16 @@ class SubscribeView(discord.ui.View):
                 return
 
             if create_status == "failed":
-                await self._safe_user_message(interaction, "I could not create a new subscription for this topic.")
+                mongo_ok, mongo_reason = await self.bot_client.subscription_store.ping()
+                if not mongo_ok:
+                    logger.error(f"Subscription create failed because Mongo is unreachable: {mongo_reason}")
+                    await self._safe_user_message(
+                        interaction,
+                        "I could not save your subscription right now because subscription storage is unavailable. "
+                        "Please try again in a minute.",
+                    )
+                else:
+                    await self._safe_user_message(interaction, "I could not create a new subscription for this topic.")
                 return
 
             self._apply_subscription_state(True)
@@ -368,7 +377,14 @@ async def _send_health(interaction: discord.Interaction) -> None:
         bot.subscription_worker is not None and bot.subscription_worker.scheduler.running
     )
 
-    mongo_ok = "configured" if bool(settings.mongo_uri) else "missing"
+    mongo_status = "missing"
+    mongo_error = ""
+    if settings.mongo_uri:
+        ok, reason = await bot.subscription_store.ping()
+        mongo_status = "connected" if ok else "unreachable"
+        if not ok:
+            mongo_error = reason[:200]
+
     redis_ok = "configured" if bool(settings.redis_host) else "missing"
     runtime_name = settings.bot_instance_name or ("RAILWAY" if os.getenv("RAILWAY_PROJECT_ID") else "LOCAL")
     runtime_identity = f"{runtime_name} @ {socket.gethostname()}"
@@ -381,7 +397,7 @@ async def _send_health(interaction: discord.Interaction) -> None:
     embed.add_field(name="Discord", value="connected" if bot.is_ready() else "not ready", inline=True)
     embed.add_field(name="Scheduler", value="running" if scheduler_running else "stopped", inline=True)
     embed.add_field(name="Guild Sync", value=settings.discord_guild_id or "global", inline=True)
-    embed.add_field(name="Mongo", value=mongo_ok, inline=True)
+    embed.add_field(name="Mongo", value=mongo_status, inline=True)
     embed.add_field(name="Redis", value=redis_ok, inline=True)
     embed.add_field(name="Runtime", value=runtime_identity, inline=False)
     embed.add_field(
@@ -398,6 +414,8 @@ async def _send_health(interaction: discord.Interaction) -> None:
         value="Run only one runtime for this bot token (local or Railway, not both).",
         inline=False,
     )
+    if mongo_error:
+        embed.add_field(name="Mongo Error", value=mongo_error, inline=False)
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 

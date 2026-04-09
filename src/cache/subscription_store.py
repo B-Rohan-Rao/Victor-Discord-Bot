@@ -38,6 +38,19 @@ class SubscriptionStore:
     async def _run(self, fn):
         return await asyncio.to_thread(fn)
 
+    async def ping(self) -> tuple[bool, str]:
+        """Check whether MongoDB subscription storage is reachable."""
+        def _sync_ping() -> tuple[bool, str]:
+            try:
+                collection = self._get_collection_sync()
+                # Force a lightweight call on the target collection namespace.
+                collection.estimated_document_count()
+                return True, "ok"
+            except Exception as exc:
+                return False, str(exc)
+
+        return await self._run(_sync_ping)
+
     async def create(self, subscription: Subscription) -> Literal["created", "already_active", "reactivated", "failed"]:
         def _sync_create() -> Literal["created", "already_active", "reactivated", "failed"]:
             collection = self._get_collection_sync()
